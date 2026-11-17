@@ -170,9 +170,11 @@ function stats(id,now){
   var last=ls.reduce(function(a,l){return Math.max(a,l.ts);},0);
   var base=Math.max(c.start,last);
   var consumed=ls.reduce(function(a,l){return a+(l.qty||1);},0);
-  var saved=Math.max(0,(now-c.start)/DAY*c.perDay-consumed);
   var unit=c.perDay>0?c.euroDay/c.perDay:0;
-  return {since:now-base,saved:Math.floor(saved),money:saved*unit,consumed:consumed};
+  var spent=ls.reduce(function(a,l){return a+(typeof l.cost==='number'?l.cost:(l.qty||1)*unit);},0);
+  var saved=Math.max(0,(now-c.start)/DAY*c.perDay-consumed);
+  var mon=Math.max(0,(now-c.start)/DAY*c.euroDay-spent);
+  return {since:now-base,saved:Math.floor(saved),money:mon,consumed:consumed,spent:spent};
 }
 function totals(now){
   var act=active(),m=0,earliest=Infinity,last=0;
@@ -223,7 +225,7 @@ function renderDiary(){
     S.log.forEach(function(o){if(o.h===l.h&&o.ts<l.ts&&o.ts>=c.start)prev=Math.max(prev,o.ts);});
     var held=l.ts-prev;
     h+='<div class="entry"><div class="bar" style="background:'+x.color+'"></div><div class="info"><b>'+x.emoji+' '+x.name+(l.qty>1?' ×'+l.qty:'')+'</b>'
-      +(held>0?'<span>Aguantaste '+short(held)+'</span>':'')+'</div><div class="tm">'+timeStr(l.ts)+'</div>'
+      +'<span>'+(typeof l.cost==='number'?money(l.cost)+(held>0?' · ':''):'')+(held>0?'Aguantaste '+short(held):'')+'</span></div><div class="tm">'+timeStr(l.ts)+'</div>'
       +'<button class="del" data-act="del" data-id="'+l.id+'" aria-label="Borrar">✕</button></div>';
   });
   view.innerHTML=h;
@@ -274,19 +276,24 @@ function tick(){
 }
 
 /* ---------- hojas modales ---------- */
-var ov=document.getElementById('ov'),draft={h:null,qty:1};
+var ov=document.getElementById('ov'),draft={};
 function openSheet(html){ov.innerHTML='<div class="sheet">'+html+'</div>';ov.style.display='flex';}
 function closeSheet(){ov.style.display='none';ov.innerHTML='';}
 ov.addEventListener('click',function(e){if(e.target===ov)closeSheet();});
 
 function openLog(pre){
   var act=active();if(!act.length){openSettings();return;}
-  draft.h=pre&&S.habits[pre]&&S.habits[pre].active?pre:act[0].id;draft.qty=1;
-  var h='<h3>¿Qué ha pasado?</h3><div class="chips">';
-  act.forEach(function(x){h+='<button class="chip'+(x.id===draft.h?' sel':'')+'" data-act="pick" data-h="'+x.id+'" style="background:'+x.color+'22;color:'+x.color+'"><span style="font-size:20px">'+x.emoji+'</span>'+x.name+'</button>';});
-  h+='</div><div class="qty"><button data-act="qm">−</button><b id="qv">1</b><button data-act="qp">+</button></div>'
+  draft={};act.forEach(function(x){draft[x.id]=x.id===pre?1:0;});
+  var h='<h3>¿Qué ha pasado?</h3><div style="font-size:13px;color:var(--mute);font-weight:600;margin:-6px 0 12px;line-height:1.35">Pon cuántos has consumido y cuánto te ha costado en total (0 si te invitaron). Si dejas el gasto vacío se usa tu precio habitual.</div>';
+  act.forEach(function(x){
+    var c=S.habits[x.id],u=c.perDay>0?c.euroDay/c.perDay:0;
+    h+='<div class="hs'+(draft[x.id]>0?' sel':'')+'" id="r-'+x.id+'"><div class="t"><span>'+x.emoji+'</span>'+x.name+'</div>'
+      +'<div class="two" style="align-items:end"><div class="qty" style="margin:0;gap:10px;justify-content:flex-start"><button data-act="qm" data-h="'+x.id+'">−</button><b id="q-'+x.id+'" style="font-size:28px;min-width:30px">'+draft[x.id]+'</b><button data-act="qp" data-h="'+x.id+'">+</button></div>'
+      +'<div class="fld" style="margin:0"><label>Gastado (€)</label><input type="text" inputmode="decimal" id="c-'+x.id+'" placeholder="'+(u?u.toFixed(2).replace('.',','):'0')+'"></div></div></div>';
+  });
+  h+=''
     +'<div class="fld"><label>Cuándo</label><input type="datetime-local" id="lts" value="'+toLocalInput(Date.now())+'" max="'+toLocalInput(Date.now())+'"></div>'
-    +'<div style="font-size:12.5px;color:var(--mute);margin-bottom:10px;font-weight:600">El contador de ese reto volverá a 0 y se restará de lo ahorrado.</div>'
+    +'<div style="font-size:12.5px;color:var(--mute);margin-bottom:10px;font-weight:600">El contador de cada reto registrado volverá a 0 y se descontará lo consumido y lo gastado.</div>'
     +'<div class="acts"><button class="btn ghost" data-act="close">Cancelar</button><button class="btn" style="background:var(--red)" data-act="savelog">Registrar</button></div>';
   openSheet(h);
 }
@@ -314,13 +321,22 @@ document.addEventListener('click',function(e){
   else if(a==='log')openLog(el.dataset.h);
   else if(a==='settings')openSettings();
   else if(a==='close')closeSheet();
-  else if(a==='pick'){draft.h=el.dataset.h;ov.querySelectorAll('.chip').forEach(function(c){c.classList.toggle('sel',c===el);});}
-  else if(a==='qm'){draft.qty=Math.max(1,draft.qty-1);document.getElementById('qv').textContent=draft.qty;}
-  else if(a==='qp'){draft.qty=Math.min(99,draft.qty+1);document.getElementById('qv').textContent=draft.qty;}
+  else if(a==='qm'||a==='qp'){
+    var id=el.dataset.h;draft[id]=Math.max(0,Math.min(99,(draft[id]||0)+(a==='qp'?1:-1)));
+    document.getElementById('q-'+id).textContent=draft[id];
+    document.getElementById('r-'+id).classList.toggle('sel',draft[id]>0);
+  }
   else if(a==='savelog'){
-    var v=document.getElementById('lts').value,ts=v?new Date(v).getTime():Date.now();
+    var v=document.getElementById('lts').value,ts=v?new Date(v).getTime():Date.now(),any=false;
     if(isNaN(ts)||ts>Date.now())ts=Date.now();
-    S.log.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),h:draft.h,ts:ts,qty:draft.qty});
+    active().forEach(function(x){
+      var q=draft[x.id]||0;if(q<1)return;
+      var cost=parseFloat(document.getElementById('c-'+x.id).value.trim().replace(',','.'));
+      if(isNaN(cost)||cost<0){var c=S.habits[x.id];cost=(c.perDay>0?c.euroDay/c.perDay:0)*q;}
+      S.log.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,6)+x.id,h:x.id,ts:ts,qty:q,cost:Math.round(cost*100)/100});
+      any=true;
+    });
+    if(!any){alert('Pon al menos una cantidad mayor que 0.');return;}
     save();closeSheet();render();
   }
   else if(a==='del'){if(confirm('¿Borrar este registro?')){S.log=S.log.filter(function(l){return l.id!==el.dataset.id;});save();render();}}
